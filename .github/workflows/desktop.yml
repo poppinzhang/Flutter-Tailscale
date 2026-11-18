@@ -60,6 +60,7 @@ jobs:
         run: scripts/build-native.sh "$(go env GOOS)" "$(go env GOARCH)" "$FLUTTER_TAILSCALE_HELPER"
       - name: Build the Windows helper and notices
         if: runner.os == 'Windows'
+        shell: pwsh
         working-directory: native
         env:
           CGO_ENABLED: '0'
