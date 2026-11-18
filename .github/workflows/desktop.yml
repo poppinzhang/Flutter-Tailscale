@@ -1,0 +1,74 @@
+name: Desktop SDK
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15, windows-2022]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    env:
+      FLUTTER_TAILSCALE_HELPER: ${{ github.workspace }}/build/ci/flutter-tailscale-bridge${{ matrix.os == 'windows-2022' && '.exe' || '' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: native/go.mod
+          cache-dependency-path: native/go.sum
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.47.6'
+          channel: stable
+          cache: true
+      - run: flutter pub get --enforce-lockfile
+      - name: Check workflow syntax, formatting and Dart analysis
+        if: runner.os == 'Linux'
+        run: |
+          docker run --rm -v "$PWD:/repo:ro" -w /repo rhysd/actionlint:1.7.12 -color
+          gofmt -l native > "$RUNNER_TEMP/gofmt.txt"
+          if [ -s "$RUNNER_TEMP/gofmt.txt" ]; then
+            cat "$RUNNER_TEMP/gofmt.txt"
+            exit 1
+          fi
+          dart format --output=none --set-exit-if-changed lib test
+          flutter analyze --no-pub
+      - name: Run Go tests with the race detector
+        if: runner.os != 'Windows'
+        working-directory: native
+        run: go test -race ./...
+      - name: Run Go tests on Windows
+        if: runner.os == 'Windows'
+        working-directory: native
+        env:
+          CGO_ENABLED: '0'
+        run: go test ./...
+      - name: Build the desktop helper and notices
+        if: runner.os != 'Windows'
+        run: scripts/build-native.sh "$(go env GOOS)" "$(go env GOARCH)" "$FLUTTER_TAILSCALE_HELPER"
+      - name: Build the Windows helper and notices
+        if: runner.os == 'Windows'
+        working-directory: native
+        env:
+          CGO_ENABLED: '0'
+        run: |
+          go build -trimpath -ldflags '-s -w -buildid=' -o $env:FLUTTER_TAILSCALE_HELPER ./cmd/flutter-tailscale
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python ../scripts/collect-licenses.py "${env:FLUTTER_TAILSCALE_HELPER}.NOTICES.txt" ./cmd/flutter-tailscale
+      - name: Smoke-test the helper without signing in
+        shell: bash
+        run: python scripts/smoke-native.py "$FLUTTER_TAILSCALE_HELPER"
+      - name: Run Flutter tests against the built helper
+        run: flutter test --no-pub
